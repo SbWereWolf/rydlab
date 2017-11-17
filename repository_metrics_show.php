@@ -1,7 +1,5 @@
 <?php
 
-const ACCOUNT_ARGUMENT_INDEX = 1;
-
 const DAY_CONTAINS_HOURS = 24;
 const WEEK_CONTAINS_DAYS = 7;
 const HOUR_COLUMN_WIDTH = 5;
@@ -12,27 +10,46 @@ const API_URL = "api.github.com";
 const USERS = 'users';
 const REPOS = 'repos';
 const COMMITS = 'commits';
+const PAGE_SIZE = 100;
 
 const ID = '4053fb491a354a6cb61f';
 const WORD = '649b38ede0df261a20a5da78c6ea27c263922b1a';
 
-
 const SETTING_ACCOUNT = 'account';
+const SETTING_AUTHOR = 'author';
 const SETTING_AUTHENTICATION = 'authentication';
 const SETTING_DOWNLOAD_OPTIONS = 'downloadOptions';
 
-$isSet = isset($argv[ACCOUNT_ARGUMENT_INDEX]);
+const ACCOUNT_OPTION = 'a';
+const NAME_OPTION = 'n';
 
-if ($isSet) {
-    $account = $argv[ACCOUNT_ARGUMENT_INDEX];
-    showGithubMetrics($account);
+$optionsSet = ACCOUNT_OPTION . ':' . NAME_OPTION . ':';
+$options = getopt($optionsSet);
+
+$isAuthorSet = isset($options[NAME_OPTION]);
+$author = '';
+if ($isAuthorSet) {
+
+    $author = $options[NAME_OPTION];
 }
 
-if (!$isSet) {
-    echo "please set Github account name, script using : $argv[0] <github_account_name>";
+$isAccountSet = isset($options[ACCOUNT_OPTION]);
+
+if (!$isAccountSet) {
+    echo "
+please set Github account : -a <github_account_name>
+also you may set commit author name : -a <github_account_name> [-n commit_author_name]";
 }
 
-function showGithubMetrics(string $account)
+if ($isAccountSet) {
+
+    $account = $options[ACCOUNT_OPTION];
+
+    showGithubMetrics($account, $author);
+}
+
+
+function showGithubMetrics(string $account, string $author)
 {
 
     $downloadOptions = [
@@ -45,7 +62,7 @@ function showGithubMetrics(string $account)
     ];
     $authentication = 'client_id=' . ID . '&client_secret=' . WORD;
 
-    $handleSetting = setSettings($account, $authentication, $downloadOptions);
+    $handleSetting = setSettings($account, $author, $authentication, $downloadOptions);
 
     $repositoryNamesList = getRepositoriesNames($handleSetting);
     $dates = getCommitsStatics($handleSetting, $repositoryNamesList);
@@ -63,7 +80,7 @@ function showGithubMetrics(string $account)
                 $grafs[$key] [$dateWeekDay] [$dateHour] = 0;
             }
 
-            $grafs[$key] [$dateWeekDay] [$dateHour] += ACCOUNT_ARGUMENT_INDEX;
+            $grafs[$key] [$dateWeekDay] [$dateHour] += 1;
         }
 
     }
@@ -113,25 +130,24 @@ function showGithubMetrics(string $account)
         echo "\n";
 
     }
-
 }
 
 /**
  * @param string $account
- * @param $authentication
- * @param $downloadOptions
+ * @param string $author
+ * @param string $authentication
+ * @param array $downloadOptions
  * @return array
- * @internal param $handleSettings
  */
-function setSettings(string $account, string $authentication, array $downloadOptions): array
+function setSettings(string $account, string $author, string $authentication, array $downloadOptions): array
 {
     $handleSettings[SETTING_ACCOUNT] = $account;
+    $handleSettings[SETTING_AUTHOR] = $author;
     $handleSettings[SETTING_AUTHENTICATION] = $authentication;
     $handleSettings[SETTING_DOWNLOAD_OPTIONS] = $downloadOptions;
 
     return $handleSettings;
 }
-
 /**
  * @param array $settings
  * @return array
@@ -139,36 +155,83 @@ function setSettings(string $account, string $authentication, array $downloadOpt
 function getSettings(array $settings): array
 {
     $account = $settings[SETTING_ACCOUNT];
+    $author = $settings[SETTING_AUTHOR];
     $authentication = $settings[SETTING_AUTHENTICATION];
     $downloadOptions = $settings[SETTING_DOWNLOAD_OPTIONS];
-    return array($account, $authentication, $downloadOptions);
+
+
+    return array($account, $author, $authentication, $downloadOptions);
 }
 
 /**
- * @param array|string $settings
+ * @param array $settings
  * @param $repositoryNamesList
  * @return array
- * @internal param $downloadOptions
- * @internal param $authentication
  */
 function getCommitsStatics(array $settings, $repositoryNamesList): array
 {
-    list($settings, $authentication, $downloadOptions) = getSettings($settings);
+    list($account, $author, $authentication, $downloadOptions) = getSettings($settings);
 
     $streamContext = stream_context_create($downloadOptions);
     $commitsInformationList = array();
     foreach ($repositoryNamesList as $name) {
-        $rawCommitsInformation = file_get_contents(PROTOCOL_PREFIX . API_URL . '/' . REPOS . '/' . $settings . '/' . $name . '/' . COMMITS . '?' . $authentication, false, $streamContext);
-        $commitsInformation = json_decode($rawCommitsInformation, true);
-        $commitsInformationList[$name] = $commitsInformation;
+
+        $sourceBase =
+            PROTOCOL_PREFIX
+            . API_URL
+            . '/'
+            . REPOS
+            . '/'
+            . $account
+            . '/'
+            . $name
+            . '/'
+            . COMMITS
+            . '?'
+            . $authentication
+            . '&per_page='
+            . PAGE_SIZE;
+        $page = 0;
+
+        do {
+            $page++;
+            $source = $sourceBase . "&page=$page";
+            $rawCommitsInformation = file_get_contents($source, false, $streamContext);
+            $commitsInformation = json_decode($rawCommitsInformation, true);
+
+            $isExists = isset($commitsInformationList[$name]);
+            if (!$isExists) {
+                $commitsInformationList[$name] = array();
+            }
+
+            $numbers = count($commitsInformation);
+
+            $isContain = $numbers > 0;
+            if ($isContain) {
+                $commitsInformationList[$name] = array_merge($commitsInformationList[$name], $commitsInformation);
+            }
+
+
+        } while ($isContain);
     }
+
+    $performValidation = !empty($author);
 
     $dates = array();
     foreach ($commitsInformationList as $key => $commits) {
 
         foreach ($commits as $commit) {
-            $dates[$key][] = $commit['commit']['author']['date'];
+            $isValid = true;
+            if ($performValidation) {
+                $authorName = $commit['commit']['author']['name'];
+                $isValid = $author == $authorName;
+            }
+
+            if ($isValid) {
+                $dates[$key][] = $commit['commit']['author']['date'];
+            }
         }
+
 
     }
 
@@ -184,7 +247,7 @@ function getCommitsStatics(array $settings, $repositoryNamesList): array
  */
 function getRepositoriesNames(array $setting): array
 {
-    list($account, $authentication, $downloadOptions) = getSettings($setting);
+    list($account, , $authentication, $downloadOptions) = getSettings($setting);
 
     $streamContext = stream_context_create($downloadOptions);
     $repositoriesRawList = file_get_contents(PROTOCOL_PREFIX . API_URL . '/' . USERS . '/' . $account . '/' . REPOS . '?' . $authentication, false, $streamContext);
@@ -201,4 +264,3 @@ function getRepositoriesNames(array $setting): array
 
     return $repositoryNamesList;
 }
-
